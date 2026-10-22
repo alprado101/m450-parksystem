@@ -1,0 +1,39 @@
+# SmartPark - Parksystem mit Schrankensteuerung
+
+## Gruppenmitglieder
+
+- **Alondra**
+- **Lucy**
+
+---
+
+## Kurze Beschreibung der Umsetzung
+
+Das System realisiert ein automatisiertes Parkhaussystem auf Basis von zwei Raspberry Pi Pico (RP2040) Mikrocontrollern mit Arduino/PlatformIO:
+
+- **Pico 1 (Kasse & Gebühren):** Verwaltet die Parkvorgänge, erfasst die Einfahrtszeit, berechnet dynamisch die Gebühren anhand der Aufenthaltsdauer und registriert Bezahlungen.
+- **Pico 2 (Schranken & Simulation):** Steuert die Servomotoren (SG90) für Ein- und Ausfahrtsschranke, simuliert die Kennzeichenerfassung (LPR) über die Konsole und fragt den Bezahlstatus via UART bei Pico 1 ab.
+
+---
+
+## Auflistung der umgesetzten User Stories / Anforderungen
+
+- **US01 (Einfahren per Kennzeichen):** Kennzeicheneingabe via Konsole (`IN <KENNZEICHEN>`) öffnet automatisch das Einfahrtsservo und speichert die Einfahrtszeit.
+- **US02 (Anzeige freier Plätze):** Zählung der Fahrzeuge im Parkhaus. Bei Erreichen der Kapazitätsgrenze (`BESETZT`) bleibt die Einfahrtsschranke gesperrt.
+- **US03 (Parkgebühr bezahlen):** Befehl `PAY <KENNZEICHEN>` an Pico 1 berechnet anhand der vergangenen Zeit die Gebühr und setzt den Status auf `BEZAHLT`.
+- **US04 (Automatisch ausfahren):** Befehl `OUT <KENNZEICHEN>` an Pico 2 fragt Pico 1 ab. Nur wenn der Status `PAID` gemeldet wird, öffnet die Ausfahrtsschranke.
+- **US05 (Live-Belegungsübersicht):** Der Befehl `LIST` auf Pico 1 zeigt alle parkenden Fahrzeuge, Zeiten und Gebühren in Echtzeit.
+- **US06 (Manuelle Notfallsteuerung):** Befehle `NOTFALL_AUF` und `NOTFALL_ZU` auf Pico 2 ermöglichen dem Betreiber das sofortige Öffnen beider Schranken bei Gefahren.
+
+---
+
+## Hardware-Verkabelung
+
+- **Servomotor SG90 (Einfahrtsschranke):**
+  - Rot (VCC) an Pin 40 (VBUS, 5V)
+  - Braun (GND) an Pin 38 (GND)
+  - Orange (Signal) an GP8 (Pin 11)
+- **UART-Kommunikation (Pico 1 zu Pico 2):**
+  - Pico 1 GP0 (TX, Pin 1) an Pico 2 GP1 (RX, Pin 2)
+  - Pico 1 GP1 (RX, Pin 2) an Pico 2 GP0 (TX, Pin 1)
+  - Gemeinsame Masse: Pico 1 GND an Pico 2 GND
