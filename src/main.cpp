@@ -1,103 +1,110 @@
 #include <Arduino.h>
 #include <Servo.h>
+#include "Parksystem.h"
 
-// 2 Servo-Objekte anlegen
-Servo servoEntry;
-Servo servoExit;
+// Produktive Hardware-Implementierung für den SG90-Servomotor
+class ServoSchranke : public ISchranke {
+private:
+    Servo servo;
+    int pin;
+    bool offen;
+    const int GATE_CLOSED = 90;
+    const int GATE_OPEN   = 0;
 
-// Pin-Belegung fuer BEIDE Schranken
-const int PIN_SERVO_ENTRY = 8; // GP8 (Pin 11) - Einfahrtsschranke
-const int PIN_SERVO_EXIT  = 9; // GP9 (Pin 12) - Ausfahrtsschranke
+public:
+    explicit ServoSchranke(int gpioPin) : pin(gpioPin), offen(false) {}
 
-// Winkel invertiert fuer SG90 (90 = unten, 0 = oben)
-const int GATE_CLOSED = 90;
-const int GATE_OPEN   = 0;
+    void init() {
+        servo.attach(pin);
+        servo.write(GATE_CLOSED);
+    }
 
-const int MAX_CAPACITY = 5;
-int currentCars = 0;
+    void oeffnen() override {
+        offen = true;
+        servo.write(GATE_OPEN);
+        delay(3000);
+    }
 
-void openEntryGate() {
-  Serial.println("[SCHRANKE] Einfahrtsschranke OEFFNET...");
-  servoEntry.write(GATE_OPEN);
-  delay(3000); // 3 Sekunden Durchfahrtszeit
-  servoEntry.write(GATE_CLOSED);
-  Serial.println("[SCHRANKE] Einfahrtsschranke GESCHLOSSEN.");
-}
+    void schliessen() override {
+        servo.write(GATE_CLOSED);
+        offen = false;
+    }
 
-void openExitGate() {
-  Serial.println("[SCHRANKE] Ausfahrtsschranke OEFFNET...");
-  servoExit.write(GATE_OPEN);
-  delay(3000); // 3 Sekunden Durchfahrtszeit
-  servoExit.write(GATE_CLOSED);
-  Serial.println("[SCHRANKE] Ausfahrtsschranke GESCHLOSSEN.");
-}
+    bool istOffen() const override {
+        return offen;
+    }
+};
+
+// Produktive UART-Kommunikation zu Pico 1 (Kasse)
+class UartKasse : public IKasse {
+public:
+    void registriereEinfahrt(const std::string& kennzeichen) override {
+        Serial1.println(("ENTRY:" + kennzeichen).c_str());
+    }
+
+    KassenStatus pruefeZahlung(const std::string& kennzeichen) override {
+        while (Serial1.available() > 0) Serial1.read();
+        Serial1.println(("CHECK:" + kennzeichen).c_str());
+
+        unsigned long timeout = millis() + 2000;
+        while (millis() < timeout) {
+            if (Serial1.available() > 0) {
+                String resp = Serial1.readStringUntil('\n');
+                resp.trim();
+                if (resp == "PAID") return KassenStatus::PAID;
+                if (resp == "UNPAID") return KassenStatus::UNPAID;
+                return KassenStatus::NOTFOUND;
+            }
+        }
+        return KassenStatus::OFFLINE;
+    }
+};
+
+ServoSchranke einfahrtHardware(8); // GP8
+ServoSchranke ausfahrtHardware(9); // GP9
+UartKasse kasseHardware;
+ParkhausSteuerung parkhaus(einfahrtHardware, ausfahrtHardware, kasseHardware, 3);
 
 void setup() {
-  Serial.begin(115200);  
-  Serial1.begin(9600); // UART Kommunikation zu Pico 1
+    Serial.begin(115200);
+    Serial1.begin(9600);
+    delay(1500);
 
-  delay(1500); 
+    einfahrtHardware.init();
+    ausfahrtHardware.init();
 
-  // Beide Servos aktivieren
-  servoEntry.attach(PIN_SERVO_ENTRY);
-  servoExit.attach(PIN_SERVO_EXIT);
-
-  // Beide Schranken sofort nach unten (zu) fahren beim Start
-  servoEntry.write(GATE_CLOSED);
-  servoExit.write(GATE_CLOSED);
-
-  Serial.println("\n============================================");
-  Serial.println("  Pico 2 (Schrankensteuerung) BEREIT");
-  Serial.println("  - IN LU123456     (Einfahrt)");
-  Serial.println("  - OUT LU123456    (Ausfahrt)");
-  Serial.println("  - NOTFALL_AUF     (Beide Schranken geoeffnet)");
-  Serial.println("============================================");
+    Serial.println("Pico 2 (SmartPark mit Dependency Injection) BEREIT");
 }
 
 void loop() {
-  if (Serial.available() > 0) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
+    if (Serial.available() > 0) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        std::string cmd = input.c_str();
 
-    // Einfahrt (IN)
-    if (input.startsWith("IN ")) {
-      String plate = input.substring(3);
-      plate.trim();
-
-      if (currentCars >= MAX_CAPACITY) {
-        Serial.println("[STATUS: BESETZT] Parkhaus voll! Einfahrt gesperrt.");
-      } else {
-        Serial.println("[KAMERA] Einfahrt Kennzeichen: " + plate);
-        Serial1.println("ENTRY:" + plate);
-        openEntryGate(); // Steuert Servo 1
-        currentCars++;
-      }
+        if (input.equalsIgnoreCase("STATUS")) {
+            Serial.println(("[ANZEIGE] " + parkhaus.getBelegungsStatus() + " (" + std::to_string(parkhaus.getAnzahlFahrzeuge()) + "/3)").c_str());
+        } else if (input.equalsIgnoreCase("TICKET")) {
+            Serial.println(parkhaus.ersatzTicketAnfordern().c_str());
+        } else if (input.equalsIgnoreCase("IN") || input.startsWith("IN ")) {
+            String plate = (input.length() > 3) ? input.substring(3) : "";
+            plate.trim();
+            plate.toUpperCase();
+            Serial.println(parkhaus.einfahrtErkannt(plate.c_str()).c_str());
+        } else if (input.startsWith("OUT ")) {
+            String plate = input.substring(4);
+            plate.trim();
+            plate.toUpperCase();
+            Serial.println(parkhaus.ausfahrtErkannt(plate.c_str()).c_str());
+        } else if (input.equalsIgnoreCase("NOTFALL_EINFAHRT")) {
+            parkhaus.notfallEinfahrtOeffnen();
+            Serial.println("[NOTFALL] Einfahrtsschranke manuell GEOEFFNET!");
+        } else if (input.equalsIgnoreCase("NOTFALL_AUSFAHRT")) {
+            parkhaus.notfallAusfahrtOeffnen();
+            Serial.println("[NOTFALL] Ausfahrtsschranke manuell GEOEFFNET!");
+        } else if (input.equalsIgnoreCase("NOTFALL_ZU")) {
+            parkhaus.notfallSchliessen();
+            Serial.println("[NOTFALL] Schranken GESCHLOSSEN.");
+        }
     }
-
-    // Ausfahrt (OUT)
-    else if (input.startsWith("OUT ")) {
-      String plate = input.substring(4);
-      plate.trim();
-
-      Serial.println("[KAMERA] Ausfahrt Kennzeichen: " + plate);
-      Serial1.println("CHECK:" + plate);
-      
-      // Hinweis: Ohne Kommunikation zu Pico 1 öffnet die Schranke hier immer zur Demo
-      Serial.println("[DEMO] Testmodus aktiv, öffne Ausfahrtsschranke.");
-      openExitGate(); // Steuert Servo 2
-      if (currentCars > 0) currentCars--;
-    }
-
-    // Notfallsteuerung
-    else if (input.equalsIgnoreCase("NOTFALL_AUF")) {
-      Serial.println("[NOTFALL] Beide Schranken AUF!");
-      servoEntry.write(GATE_OPEN);
-      servoExit.write(GATE_OPEN);
-    }
-    else if (input.equalsIgnoreCase("NOTFALL_ZU")) {
-      Serial.println("[NOTFALL] Beide Schranken ZU!");
-      servoEntry.write(GATE_CLOSED);
-      servoExit.write(GATE_CLOSED);
-    }
-  }
 }

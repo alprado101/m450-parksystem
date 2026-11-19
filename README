@@ -1,39 +1,44 @@
-# SmartPark - Parksystem mit Schrankensteuerung
+# SmartPark – Automatisierte Tests mit Test Doubles
 
-## Gruppenmitglieder
+## 1. Gruppenmitglieder
 
-- **Alondra**
-- **Lucy**
-
----
-
-## Kurze Beschreibung der Umsetzung
-
-Das System realisiert ein automatisiertes Parkhaussystem auf Basis von zwei Raspberry Pi Pico (RP2040) Mikrocontrollern mit Arduino/PlatformIO:
-
-- **Pico 1 (Kasse & Gebühren):** Verwaltet die Parkvorgänge, erfasst die Einfahrtszeit, berechnet dynamisch die Gebühren anhand der Aufenthaltsdauer und registriert Bezahlungen.
-- **Pico 2 (Schranken & Simulation):** Steuert die Servomotoren (SG90) für Ein- und Ausfahrtsschranke, simuliert die Kennzeichenerfassung (LPR) über die Konsole und fragt den Bezahlstatus via UART bei Pico 1 ab.
+- **Alondra Prado**
+- **Lucy Duss**
 
 ---
 
-## Auflistung der umgesetzten User Stories / Anforderungen
+## 2. Identifizierte Abhängigkeiten & Test Doubles
 
-- **US01 (Einfahren per Kennzeichen):** Kennzeicheneingabe via Konsole (`IN <KENNZEICHEN>`) öffnet automatisch das Einfahrtsservo und speichert die Einfahrtszeit.
-- **US02 (Anzeige freier Plätze):** Zählung der Fahrzeuge im Parkhaus. Bei Erreichen der Kapazitätsgrenze (`BESETZT`) bleibt die Einfahrtsschranke gesperrt.
-- **US03 (Parkgebühr bezahlen):** Befehl `PAY <KENNZEICHEN>` an Pico 1 berechnet anhand der vergangenen Zeit die Gebühr und setzt den Status auf `BEZAHLT`.
-- **US04 (Automatisch ausfahren):** Befehl `OUT <KENNZEICHEN>` an Pico 2 fragt Pico 1 ab. Nur wenn der Status `PAID` gemeldet wird, öffnet die Ausfahrtsschranke.
-- **US05 (Live-Belegungsübersicht):** Der Befehl `LIST` auf Pico 1 zeigt alle parkenden Fahrzeuge, Zeiten und Gebühren in Echtzeit.
-- **US06 (Manuelle Notfallsteuerung):** Befehle `NOTFALL_AUF` und `NOTFALL_ZU` auf Pico 2 ermöglichen dem Betreiber das sofortige Öffnen beider Schranken bei Gefahren.
+Die Geschäftslogik wurde über Interfaces (`ISchranke`, `IKasse`, `IUhr`) von der Hardware getrennt und per Dependency Injection übergeben:
+
+| Abhängigkeit                                    | Problem im automatisierten Test                                      | Test Double                                   | Begründung                                                                                           |
+| :---------------------------------------------- | :------------------------------------------------------------------- | :-------------------------------------------- | :--------------------------------------------------------------------------------------------------- |
+| **Schranken-Servos** (`Servo.write()`, `delay`) | Benötigt physische GPIOs und verzögert Tests durch 3 s Wartezeit.    | **Mock** (`SchrankeMock`)                     | Zählt Öffnungs-/Schliessaufrufe und prüft, ob die Schranke bei Fehlern geschlossen bleibt.           |
+| **UART-Kasse** (`Serial1` zu Pico 1)            | Erfordert zweiten Pico, Verkabelung und Timeout-Wartezeiten.         | **Stub** (`KasseStub`)                        | Liefert fixe Antworten (`PAID`, `UNPAID`, `NOTFOUND`, `OFFLINE`) für deterministische Fehler-Tests.  |
+| **Systemzeit** (`millis()`)                     | Echtzeitabhängig; lange Parkdauern würden reale Wartezeit erfordern. | **Stub** (`UhrStub`) & **Dummy** (`DummyUhr`) | Simuliert Zeitstempel in Millisekunden ohne Wartezeit; `Dummy` dient als Platzhalter im Konstruktor. |
+| **Fahrzeugspeicher**                            | Globale Arrays erschweren einen sauberen Startzustand pro Test.      | **Fake** (`std::vector`)                      | Vereinfachte In-Memory-Speicherung, die für jeden Testfall frisch instanziiert wird.                 |
+| **Kamera / Terminal** (`Serial`)                | Manuelle Konsoleneingaben sind nicht automatisierbar.                | **Direkter Aufruf**                           | Testfälle übergeben Kennzeichen direkt als String-Parameter an die Logik-Methoden.                   |
 
 ---
 
-## Hardware-Verkabelung
+## 3. Automatisierte Testfälle (Bezug zum Testkonzept)
 
-- **Servomotor SG90 (Einfahrtsschranke):**
-  - Rot (VCC) an Pin 40 (VBUS, 5V)
-  - Braun (GND) an Pin 38 (GND)
-  - Orange (Signal) an GP8 (Pin 11)
-- **UART-Kommunikation (Pico 1 zu Pico 2):**
-  - Pico 1 GP0 (TX, Pin 1) an Pico 2 GP1 (RX, Pin 2)
-  - Pico 1 GP1 (RX, Pin 2) an Pico 2 GP0 (TX, Pin 1)
-  - Gemeinsame Masse: Pico 1 GND an Pico 2 GND
+Ausführung über `pio test -e native` (Datei: `test/test_parksystem/test_main.cpp`):
+
+| Testfunktion                                            | Testkonzept              | Geprüftes Verhalten                                                                             |
+| :------------------------------------------------------ | :----------------------- | :---------------------------------------------------------------------------------------------- |
+| `test_TC01_einfahrt_gueltiges_kennzeichen`              | **TC-01** (US01)         | `LU123456` wird gespeichert, `KasseStub` registriert Einfahrt, `SchrankeMock` öffnet/schliesst. |
+| `test_TC02_ersatzticket_bei_unlesbarem_kennzeichen`     | **TC-02** (US01)         | `UNLESBAR` erzeugt `TICKET1` und öffnet Einfahrtsschranke.                                      |
+| `test_TC03_TC04_TC05_belegungsanzeige_frei_und_besetzt` | **TC-03–05** (US02)      | Status wechselt bei 3/3 auf `BESETZT` (blockiert `LU999999`) und nach Ausfahrt auf `FREI`.      |
+| `test_TC06_TC07_gebuehrenberechnung_und_bezahlung`      | **TC-06, TC-07** (US03)  | `UhrStub` prüft 15 s (CHF 2.00) & 35 s (CHF 4.00); Zahlung setzt Status auf `PAID`.             |
+| `test_TC08_ausfahrt_bezahlt_oeffnet_schranke`           | **TC-08** (US04)         | Bei Status `PAID` öffnet Ausfahrts-`SchrankeMock` und bucht Fahrzeug aus.                       |
+| `test_TC09_TC14_TC15_ausfahrt_blockiert_...`            | **TC-09, 14, 15** (US04) | Bei `UNPAID`, `NOTFOUND` und `OFFLINE` bleibt Ausfahrtsschranke geschlossen (`0` Öffnungen).    |
+| `test_TC11_TC12_notfall_oeffnung`                       | **TC-11, TC-12** (US06)  | Notfallbefehle öffnen Ein- und Ausfahrts-`SchrankeMock` unabhängig vom Bezahlstatus.            |
+| `test_TC13_TC16_ungueltiges_kennzeichen_und_dublette`   | **TC-13, TC-16** (US01)  | Leeres Kennzeichen, `@@123` und doppeltes `LU123456` werden abgewiesen; Schranke bleibt zu.     |
+
+---
+
+## 4. Fazit: Nicht automatisierbare Testfälle
+
+- **TC-10 (Usability & visueller Abgleich):** Die Verständlichkeit der Konsolenausgabe sowie der Abgleich mit der realen Schrankenstellung erfordern menschliche Beurteilung.
+- **Physische Hardware-Tests (TC-01, TC-08, TC-15):** Die korrekte Drehrichtung/Stromversorgung der SG90-Servos an GP8/GP9 sowie die physische UART-Verkabelung (inkl. Kabelbruch-Test) werden durch Mocks/Stubs ersetzt und müssen weiterhin manuell an den Boards geprüft werden.
